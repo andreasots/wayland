@@ -1,0 +1,13 @@
+[package]
+
+name = "proto_generator"
+version = "0.0.1"
+authors = ["Andreas Ots <andreasots@gmail.com>"]
+
+[lib]
+name = "proto_generator"
+crate-type = ["dylib"]
+plugin = true
+
+[dependencies.rust-xml]
+git = "https://github.com/netvl/rust-xml"
