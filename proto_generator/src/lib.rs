@@ -3,6 +3,7 @@
 extern crate syntax;
 extern crate rustc;
 extern crate xml;
+extern crate rustdoc;
 
 use syntax::codemap::{DUMMY_SP, Span};
 use syntax::parse::token;
@@ -44,33 +45,23 @@ fn to_camel_case(s: &str) -> String {
     s.split('_').flat_map(|word| word.chars().enumerate().map(|(i, c)| if i == 0 { c.to_uppercase() } else { c })).collect()
 }
 
-fn desmurf(symbols: &mut [String]) {
-    if symbols.len() < 2 {
-        return;
-    }
-
-    let prefix = {
-        let mut prefix = std::uint::MAX;
-        let ref head = symbols[0];
-        let tail = symbols.slice_from(1);
-        for symbol in tail.iter() {
-            let ((count, _), _) = head.char_indices().zip(symbol.chars()).take_while(|&((_, a), b)| a == b).last().unwrap_or(((-1, 'a'), 'a'));
-            prefix = std::cmp::min(prefix, count+1);
-        }
-        prefix
+fn desmurf<'a, I: Iterator<&'a str>>(mut symbols: I) -> uint {
+    let mut prefix = std::uint::MAX;
+    let head = match symbols.next() {
+        Some(head) => head,
+        None => return 0,
     };
 
-    if prefix == 0 {
-        return;
+    for symbol in symbols {
+        let ((count, _), _) = head.char_indices().zip(symbol.chars())
+            .take_while(|&((_, a), b)| a == b).last().unwrap_or(((-1, 'a'), 'a'));
+        prefix = std::cmp::min(prefix, count+1);
     }
 
-    for e in symbols.iter_mut() {
-        let e = unsafe { e.as_mut_vec() };
-        let len = e.len();
-        for i in range(prefix, len) {
-            e[i-prefix] = e[i];
-        }
-        e.truncate(len-prefix);
+    if prefix == std::uint::MAX {
+        0
+    } else {
+        prefix
     }
 }
 
@@ -88,6 +79,16 @@ struct Description {
     description: String,
 }
 
+impl Description {
+    fn to_docstring(&self) -> syntax::ast::Lit_ {
+        let mut docstring = self.summary.clone();
+        docstring.push_str("\n\n");
+        docstring.push_str(rustdoc::passes::unindent(self.description.as_slice()).as_slice());
+
+        LitStr(token::get_name(token::intern(docstring.as_slice())), CookedStr)
+    }
+}
+
 struct Arg {
     description: Option<Description>,
     name: String,
@@ -98,7 +99,8 @@ struct Arg {
 
 struct Entry {
     description: Option<Description>,
-    value: u32,
+    name: String,
+    value: String,
     summary: Option<String>,
 }
 
@@ -243,6 +245,11 @@ impl Schema {
             },
             "event" => match self.state.last() {
                 Some(&InterfaceTag) => {
+                    self.root.as_mut().unwrap().interfaces.last_mut().unwrap().children.push(Event {
+                        description: None,
+                        name: String::from_str(required_attr!(&attrs, "event", "name")),
+                        args: Vec::new(),
+                    });
                     self.state.push(EventTag);
                     Ok(())
                 },
@@ -250,6 +257,11 @@ impl Schema {
             },
             "enum" => match self.state.last() {
                 Some(&InterfaceTag) => {
+                    self.root.as_mut().unwrap().interfaces.last_mut().unwrap().children.push(Enum {
+                        description: None,
+                        name: String::from_str(required_attr!(&attrs, "enum", "name")),
+                        entries: Vec::new(),
+                    });
                     self.state.push(EnumTag);
                     Ok(())
                 },
@@ -257,6 +269,18 @@ impl Schema {
             },
             "entry" => match self.state.last() {
                 Some(&EnumTag) => {
+                    let enum_ = self.root.as_mut().unwrap()
+                        .interfaces.last_mut().unwrap()
+                        .children.last_mut().unwrap();
+                    match *enum_ {
+                        Enum { ref mut entries, ..} => entries.push(Entry {
+                            description: None,
+                            name: String::from_str(required_attr!(&attrs, "entry", "name")),
+                            value: String::from_str(required_attr!(&attrs, "entry", "value")),
+                            summary: find_attrib(&attrs, "summary").map(String::from_str),
+                        }),
+                        _ => unreachable!(),
+                    }
                     self.state.push(EntryTag);
                     Ok(())
                 },
@@ -264,14 +288,82 @@ impl Schema {
             },
             "arg" => match self.state.last() {
                 Some(&RequestTag) | Some(&EventTag) => {
+                    let child = self.root.as_mut().unwrap()
+                        .interfaces.last_mut().unwrap()
+                        .children.last_mut().unwrap();
+                    match *child {
+                        Request { ref mut args, ..} | Event { ref mut args, ..} =>
+                            args.push(Arg {
+                                description: None,
+                                name: String::from_str(required_attr!(&attrs, "entry", "name")),
+                                type_: match required_attr!(&attrs, "entry", "type") {
+                                    "int" => Int,
+                                    "uint" => Uint,
+                                    "fixed" => Fixed,
+                                    "string" => String_,
+                                    "object" => Object(find_attrib(&attrs, "interface").map(String::from_str)),
+                                    "new_id" => NewId(find_attrib(&attrs, "interface").map(String::from_str)),
+                                    "array" => Array,
+                                    "fd" => Fd,
+                                    _ => return Err("Unrecognised primitive type"),
+                                },
+                                summary: find_attrib(&attrs, "summary").map(String::from_str),
+                                allow_null: find_attrib(&attrs, "allow-null") == Some("true"),
+                            }),
+                        _ => unreachable!(),
+                    }
                     self.state.push(ArgTag);
                     Ok(())
                 },
                 _ => Err("<arg> is not allowed in this context"),
             },
             "description" => match self.state.last() {
-                Some(&InterfaceTag) | Some(&RequestTag) | Some(&EventTag) | Some(&EnumTag)
-                        | Some(&EntryTag) | Some(&ArgTag) => {
+                Some(&InterfaceTag) => {
+                    self.root.as_mut().unwrap()
+                        .interfaces.last_mut().unwrap().description = Some(Description {
+                        summary: String::from_str(required_attr!(&attrs, "description", "summary")),
+                        description: String::new(),
+                    });
+                    self.state.push(DescriptionTag);
+                    Ok(())
+                },
+                Some(&RequestTag) | Some(&EventTag) | Some(&EnumTag) => {
+                    match *self.root.as_mut().unwrap()
+                            .interfaces.last_mut().unwrap().children.last_mut().unwrap() {
+                        Request { ref mut description, ..} | Event { ref mut description, ..}
+                            | Enum { ref mut description, ..} => *description = Some(Description {
+                                summary: String::from_str(required_attr!(&attrs, "description", "summary")),
+                                description: String::new(),
+                            }),
+                    }
+                    self.state.push(DescriptionTag);
+                    Ok(())
+                },
+                Some(&EntryTag) => {
+                    match *self.root.as_mut().unwrap()
+                            .interfaces.last_mut().unwrap().children.last_mut().unwrap() {
+                        Enum { ref mut entries, ..} =>
+                            entries.last_mut().unwrap().description = Some(Description {
+                                summary: String::from_str(required_attr!(&attrs,
+                                                                         "description", "summary")),
+                                description: String::new(),
+                            }),
+                        _ => unreachable!(),
+                    }
+                    self.state.push(DescriptionTag);
+                    Ok(())
+                },
+                Some(&ArgTag) => {
+                    match *self.root.as_mut().unwrap()
+                            .interfaces.last_mut().unwrap().children.last_mut().unwrap() {
+                        Request { ref mut args, ..} | Event { ref mut args, ..}=>
+                            args.last_mut().unwrap().description = Some(Description {
+                                summary: String::from_str(required_attr!(&attrs,
+                                                                         "description", "summary")),
+                                description: String::new(),
+                            }),
+                        _ => unreachable!(),
+                    }
                     self.state.push(DescriptionTag);
                     Ok(())
                 },
@@ -281,7 +373,7 @@ impl Schema {
         }
     }
 
-    fn end_element(&mut self, name: String) -> Result<(), &'static str> {
+    fn end_element(&mut self, _name: String) -> Result<(), &'static str> {
         self.state.pop();
         Ok(())
     }
@@ -300,17 +392,42 @@ impl Schema {
                 Some(&InterfaceTag) => {
                     self.root.as_mut().unwrap()
                         .interfaces.last_mut().unwrap()
-                        .description.unwrap()
+                        .description.as_mut().unwrap()
                         .description.push_str(data.as_slice());
                     Ok(())
                 },
                 Some(&RequestTag) | Some(&EventTag) | Some(&EnumTag) => {
+                    let child = self.root.as_mut().unwrap()
+                        .interfaces.last_mut().unwrap()
+                        .children.last_mut().unwrap();
+                    match *child {
+                        Request { ref mut description, ..} | Event { ref mut description, ..}
+                            | Enum { ref mut description, ..} =>
+                                description.as_mut().unwrap().description.push_str(data.as_slice()),
+                    }
                     Ok(())
                 },
                 Some(&EntryTag) => {
+                    let child = self.root.as_mut().unwrap()
+                        .interfaces.last_mut().unwrap()
+                        .children.last_mut().unwrap();
+                    match *child {
+                        Enum { ref mut entries, ..} => entries.last_mut().unwrap()
+                            .description.as_mut().unwrap().description.push_str(data.as_slice()),
+                        _ => unreachable!(),
+                    }
                     Ok(())
                 },
                 Some(&ArgTag) => {
+                    let child = self.root.as_mut().unwrap()
+                        .interfaces.last_mut().unwrap()
+                        .children.last_mut().unwrap();
+                    match *child {
+                        Request { ref mut args, ..} | Event { ref mut args, ..} =>
+                            args.last_mut().unwrap()
+                                .description.as_mut().unwrap().description.push_str(data.as_slice()),
+                        _ => unreachable!(),
+                    }
                     Ok(())
                 },
                 _ => unreachable!(),
@@ -320,7 +437,37 @@ impl Schema {
     }
 
     fn get_module(&self, cx: &mut ExtCtxt) -> P<Item> {
-        unimplemented!()
+        let proto = self.root.as_ref().unwrap();
+        let vi = Vec::new();
+        let attrs = Vec::new();
+        let prefix_len = desmurf(proto.interfaces.iter().map(|interface| interface.name.as_slice()));
+        let mut items = Vec::new();
+
+        let empty_struct = StructDef { fields: Vec::new(), ctor_id: None };
+        let doc_str = token::InternedString::new("doc");
+
+        for interface in proto.interfaces.iter() {
+            let mut node = cx.item_struct(DUMMY_SP,
+                    cx.ident_of(to_camel_case(interface.name.slice_from(prefix_len)).as_slice()),
+                    empty_struct.clone()
+            );
+            node = node.map(|mut m| { m.vis = Public; m });
+            match interface.description {
+                Some(ref description) => {
+                    node = node.map(|mut m| {
+                        m.attrs.push(cx.attribute(DUMMY_SP,
+                            cx.meta_name_value(DUMMY_SP, doc_str.clone(), description.to_docstring()
+                            )
+                        ));
+                        m
+                    });
+                }
+                None => (),
+            }
+            items.push(node);
+        }
+
+        cx.item_mod(DUMMY_SP, DUMMY_SP, cx.ident_of(proto.name.as_slice()), attrs, vi, items).map(|mut m| { m.vis = Public; m})
     }
 }
 
