@@ -1,0 +1,8 @@
+[package]
+
+name = "wayland"
+version = "0.0.1"
+authors = ["Andreas Ots <andreasots@gmail.com>"]
+
+[dependencies.proto_generator]
+path = "proto_generator"
