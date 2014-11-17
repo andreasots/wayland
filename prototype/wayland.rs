@@ -221,11 +221,17 @@ impl Object for DummyObject {
 // Generated from `wayland.xml`
 pub mod wayland {
     pub mod wl_display {
-        pub trait Interface: ::Object {
-            fn sync(&mut self, _callback: &::wl_callback::Interface) {}
-            fn get_registry(&mut self, _registry: &::wl_registry::Interface) {}
+        pub trait Interface: 'static {
+            fn sync(&mut self, _callback: &::wl_callback::InterfaceObject) {}
+            fn get_registry(&mut self, _registry: &::wl_registry::InterfaceObject) {}
             fn error(&mut self, _object_id: &::Object, _code: u32, _message: &str) {}
             fn delete_id(&mut self, _id: u32) {}
+        }
+
+        pub trait InterfaceObject: Interface + ::Object {
+        }
+
+        impl<T: Interface + ::Object> InterfaceObject for T{
         }
 
         pub struct ClientProxy<T: Interface> {
@@ -284,7 +290,7 @@ pub mod wayland {
         }
 
         impl<T: Interface> Interface for ClientProxy<T> {
-            fn sync(&mut self, callback: &::wl_callback::Interface) {
+            fn sync(&mut self, callback: &::wl_callback::InterfaceObject) {
                 match self.tx {
                     Some(ref sender) => {
                         let mut payload = ::std::io::MemWriter::new();
@@ -295,7 +301,7 @@ pub mod wayland {
                 }
             }
 
-            fn get_registry(&mut self, registry: &::wl_registry::Interface) {
+            fn get_registry(&mut self, registry: &::wl_registry::InterfaceObject) {
                 match self.tx {
                     Some(ref sender) => {
                         let mut payload = ::std::io::MemWriter::new();
@@ -327,11 +333,17 @@ pub mod wayland {
     }
 
     pub mod wl_registry {
-        pub trait Interface: ::Object {
+        pub trait Interface: 'static {
             fn bind(&mut self, _name: u32, _id: &::Object) {}
 
             fn global(&mut self, _name: u32, _interface: &str, _version: u32) {}
             fn global_remove(&mut self, _name: u32) {}
+        }
+
+        pub trait InterfaceObject: Interface + ::Object {
+        }
+
+        impl<T: Interface + ::Object> InterfaceObject for T{
         }
 
         pub struct ClientProxy<T: Interface> {
@@ -417,9 +429,15 @@ pub mod wayland {
     }
 
     pub mod wl_callback {
-        pub trait Interface: ::Object {
+        pub trait Interface: 'static {
 
             fn done(&mut self, _callback_data: u32) {}
+        }
+
+        pub trait InterfaceObject: Interface + ::Object {
+        }
+
+        impl<T: Interface + ::Object> InterfaceObject for T{
         }
 
         pub struct ClientProxy<T: Interface> {
@@ -496,12 +514,6 @@ impl wl_registry::Interface for Registry {
     }
 }
 
-impl Object for Registry {
-    fn get_id(&self) -> u32 {
-        panic!()
-    }
-}
-
 impl Registry {
     pub fn get_name(&self, interface: &str, version: u32) -> Option<u32> {
         self.objects.iter()
@@ -565,12 +577,6 @@ impl wl_display::Interface for Display {
                 self.next_id -= 1
             }
         }
-    }
-}
-
-impl Object for Display {
-    fn get_id(&self) -> u32 {
-        panic!()
     }
 }
 
@@ -658,7 +664,7 @@ impl Connection {
         }
     }
 
-    pub fn sync(&mut self, callback: &wl_callback::Interface) {
+    pub fn sync(&mut self, callback: &wl_callback::InterfaceObject) {
         use wl_display::Interface;
 
         self.display.sync(callback)

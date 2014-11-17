@@ -10,12 +10,6 @@ impl wayland::wl_callback::Interface for Callback {
     }
 }
 
-impl wayland::Object for Callback {
-    fn get_id(&self) -> u32 {
-        panic!()
-    }
-}
-
 fn main() {
     let mut conn = wayland::Connection::connect_default().unwrap();
     let registry = conn.get_registry();
